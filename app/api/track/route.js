@@ -3,8 +3,21 @@ import { XMLParser } from 'fast-xml-parser';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const DOMESTIC_ENDPOINT = 'http://openapi.epost.go.kr/trace/retrieveLongitudinalService/retrieveLongitudinalService/getLongitudinalDomesticList';
-const COMBINED_ENDPOINT = 'http://openapi.epost.go.kr/trace/retrieveLongitudinalCombinedService/retrieveLongitudinalCombinedService/getLongitudinalCombinedList';
+// data.go.kr 공식 문서의 Service URL은 http 입니다.
+const ENDPOINTS = [
+  {
+    id: 'combined',
+    name: '우체국 통합 종적조회',
+    url: 'http://openapi.epost.go.kr/trace/retrieveLongitudinalCombinedService/retrieveLongitudinalCombinedService/getLongitudinalCombinedList',
+    parser: parseCombinedXml
+  },
+  {
+    id: 'domestic',
+    name: '국내우편물 종적조회',
+    url: 'http://openapi.epost.go.kr/trace/retrieveLongitudinalService/retrieveLongitudinalService/getLongitudinalDomesticList',
+    parser: parseDomesticXml
+  }
+];
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -16,8 +29,9 @@ const parser = new XMLParser({
 
 function serviceKeyQueryValue(key) {
   if (!key) return '';
+  const trimmed = String(key).trim();
   // data.go.kr 인증키는 Encoding/Decoding 2종이 있어 이중 인코딩 방지 처리
-  return /%[0-9A-Fa-f]{2}/.test(key) ? key : encodeURIComponent(key);
+  return /%[0-9A-Fa-f]{2}/.test(trimmed) ? trimmed : encodeURIComponent(trimmed);
 }
 
 function normalizeTrackingNo(value) {
@@ -38,11 +52,6 @@ function normalizeTime(value) {
   const compact = s.replace(/[^0-9]/g, '');
   if (compact.length === 4) return `${compact.slice(0, 2)}:${compact.slice(2, 4)}`;
   return s;
-}
-
-function asArray(value) {
-  if (value === undefined || value === null) return [];
-  return Array.isArray(value) ? value : [value];
 }
 
 function walk(obj, cb) {
@@ -91,7 +100,7 @@ function collectDomesticEvents(obj) {
 
 function parseDomesticXml(xml, requestedTrackingNo) {
   const data = parser.parse(xml);
-  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'returnAuthMsg', 'returnReasonCode', 'resultMsg']);
+  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'returnAuthMsg', 'returnReasonCode', 'resultMsg', 'resultCode']);
   const dlvySttus = findFirstValue(data, ['dlvySttus']);
   const dlvyDe = normalizeDate(findFirstValue(data, ['dlvyDe']));
   const pstmtrKnd = findFirstValue(data, ['pstmtrKnd']);
@@ -127,7 +136,7 @@ function parseDomesticXml(xml, requestedTrackingNo) {
 function parseCombinedXml(xml, requestedTrackingNo) {
   const data = parser.parse(xml);
   const successYn = findFirstValue(data, ['successYn']);
-  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'resultMsg']);
+  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'resultMsg', 'returnAuthMsg', 'returnReasonCode', 'resultCode']);
   const trackState = findFirstValue(data, ['trackState']);
   const receiveDate = normalizeDate(findFirstValue(data, ['receiveDate']));
   const senderData = normalizeDate(findFirstValue(data, ['senderData']));
@@ -154,20 +163,89 @@ function parseCombinedXml(xml, requestedTrackingNo) {
   };
 }
 
-async function callEpost(endpoint, serviceKey, rgist) {
-  const url = `${endpoint}?ServiceKey=${serviceKeyQueryValue(serviceKey)}&rgist=${encodeURIComponent(rgist)}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    cache: 'no-store',
-    headers: { 'Accept': 'application/xml,text/xml,*/*' }
-  });
-  const text = await res.text();
-  return { status: res.status, text };
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function describeFetchError(error) {
+  const cause = error?.cause;
+  const parts = [];
+  if (error?.name) parts.push(error.name);
+  if (error?.message) parts.push(error.message);
+  if (cause?.code) parts.push(`cause.code=${cause.code}`);
+  if (cause?.errno) parts.push(`cause.errno=${cause.errno}`);
+  if (cause?.syscall) parts.push(`cause.syscall=${cause.syscall}`);
+  if (cause?.address) parts.push(`cause.address=${cause.address}`);
+  if (cause?.port) parts.push(`cause.port=${cause.port}`);
+  if (cause?.message) parts.push(`cause.message=${cause.message}`);
+  return parts.join(' | ') || 'fetch failed';
+}
+
+function rawExcerpt(text) {
+  return String(text || '')
+    .replace(/<ServiceKey>.*?<\/ServiceKey>/gi, '<ServiceKey>***</ServiceKey>')
+    .slice(0, 500);
+}
+
+async function callEpost(endpoint, serviceKey, rgist, { retries = 2, timeoutMs = 15000 } = {}) {
+  const url = `${endpoint.url}?ServiceKey=${serviceKeyQueryValue(serviceKey)}&rgist=${encodeURIComponent(rgist)}`;
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/xml,text/xml,*/*',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.1.5'
+        }
+      });
+      const text = await res.text();
+      clearTimeout(timer);
+      return { endpointId: endpoint.id, endpointName: endpoint.name, status: res.status, text, attempt: attempt + 1 };
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error;
+      if (attempt < retries) await sleep(700 * (attempt + 1));
+    }
+  }
+
+  throw new Error(`${endpoint.name} fetch failed: ${describeFetchError(lastError)}`);
+}
+
+async function tryEndpoint(endpoint, serviceKey, rgist, debug) {
+  try {
+    const response = await callEpost(endpoint, serviceKey, rgist);
+    const parsed = endpoint.parser(response.text, rgist);
+    return {
+      endpoint: endpoint.id,
+      endpointName: endpoint.name,
+      httpStatus: response.status,
+      attempt: response.attempt,
+      parsed,
+      ok: parsed.ok,
+      errorMessage: parsed.ok ? '' : parsed.errorMessage,
+      rawExcerpt: debug ? rawExcerpt(response.text) : undefined
+    };
+  } catch (error) {
+    return {
+      endpoint: endpoint.id,
+      endpointName: endpoint.name,
+      ok: false,
+      thrown: true,
+      errorMessage: error?.message || 'fetch failed'
+    };
+  }
 }
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const rgist = normalizeTrackingNo(searchParams.get('rgist'));
+  const debug = searchParams.get('debug') === '1';
   const serviceKey = process.env.EPOST_SERVICE_KEY;
 
   if (!serviceKey) {
@@ -180,30 +258,29 @@ export async function GET(request) {
     return Response.json({ ok: false, errorMessage: '등기번호 형식이 올바르지 않습니다.', trackingNo: rgist }, { status: 400 });
   }
 
-  try {
-    const domestic = await callEpost(DOMESTIC_ENDPOINT, serviceKey, rgist);
-    const domesticParsed = parseDomesticXml(domestic.text, rgist);
-    if (domesticParsed.ok) {
-      return Response.json({ ...domesticParsed, source: 'domestic' });
-    }
+  const diagnostics = [];
 
-    const combined = await callEpost(COMBINED_ENDPOINT, serviceKey, rgist);
-    const combinedParsed = parseCombinedXml(combined.text, rgist);
-    if (combinedParsed.ok) {
-      return Response.json({ ...combinedParsed, source: 'combined' });
+  for (const endpoint of ENDPOINTS) {
+    const result = await tryEndpoint(endpoint, serviceKey, rgist, debug);
+    diagnostics.push(result);
+    if (result.ok) {
+      return Response.json({
+        ...result.parsed,
+        source: endpoint.id,
+        diagnostics: debug ? diagnostics : undefined
+      });
     }
-
-    return Response.json({
-      ok: false,
-      trackingNo: rgist,
-      errorMessage: domesticParsed.errorMessage || combinedParsed.errorMessage || '조회 결과가 없습니다.',
-      source: 'none'
-    });
-  } catch (error) {
-    return Response.json({
-      ok: false,
-      trackingNo: rgist,
-      errorMessage: error?.message || '우체국 API 호출 중 오류가 발생했습니다.'
-    }, { status: 500 });
   }
+
+  const message = diagnostics
+    .map((d) => `${d.endpointName}: ${d.errorMessage || '조회 실패'}`)
+    .join(' / ');
+
+  return Response.json({
+    ok: false,
+    trackingNo: rgist,
+    errorMessage: message || '조회 결과가 없습니다.',
+    source: 'none',
+    diagnostics: debug ? diagnostics : undefined
+  });
 }

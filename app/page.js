@@ -9,14 +9,13 @@ const CURRENT_JOB = 'epost-tracking-current-job:v1';
 
 const CANDIDATES = {
   seq: ['순번', '번호', 'no', 'NO', 'No', '연번'],
-  birth: ['생년월일', '생년', '생일', '주민번호앞자리', '주민등록번호', '주민등록번호앞자리', '생년월일6자리'],
   trackingNo: ['등기번호', '우편물번호', '송장번호', '배송번호', '등기', 'tracking', 'rgist'],
   // 화면/CSV에는 고객번호로 표시합니다. 내부 변수명은 기존 호환을 위해 internalId 유지.
   internalId: ['고객번호', '고객관리번호', '고객NO', '고객No', '고객no', '고객ID', '고객id']
 };
 
 const DEFAULT_COLUMNS = [
-  '순번', '생년월일', '등기번호', '고객번호',
+  '순번', '등기번호', '고객번호',
   '배달상태', '최종처리일자', '최종처리시간', '처리우체국', '배달일자',
   '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각', '우편물종류', '취급구분'
 ];
@@ -62,7 +61,7 @@ function findColumn(headers, type) {
 }
 
 function makeRowId(row) {
-  return [row.seq, row.birth, row.trackingNo, row.internalId].map(cleanString).join('|');
+  return [row.seq, row.trackingNo, row.internalId].map(cleanString).join('|');
 }
 
 function makeFingerprint(rows) {
@@ -157,7 +156,6 @@ function toCsv(rows, mode = 'all') {
   filtered.forEach((r) => {
     lines.push([
       r.seq,
-      r.birth,
       r.trackingNo,
       r.internalId,
       r.deliveryStatus,
@@ -195,7 +193,6 @@ function parseSheetToRows(sheetJson, mapping) {
   const colIndex = (name) => headers.indexOf(name);
 
   const seqIdx = colIndex(mapping.seq);
-  const birthIdx = colIndex(mapping.birth);
   const trackingIdx = colIndex(mapping.trackingNo);
   const internalIdx = colIndex(mapping.internalId);
 
@@ -204,7 +201,6 @@ function parseSheetToRows(sheetJson, mapping) {
       const row = {
         sourceIndex: idx + 2,
         seq: seqIdx >= 0 ? cleanString(arr[seqIdx]) : String(idx + 1),
-        birth: birthIdx >= 0 ? cleanString(arr[birthIdx]) : '',
         trackingNo: trackingIdx >= 0 ? cleanTrackingNo(arr[trackingIdx]) : '',
         internalId: internalIdx >= 0 ? cleanString(arr[internalIdx]) : '',
         deliveryStatus: '',
@@ -231,13 +227,13 @@ function parseSheetToRows(sheetJson, mapping) {
       }
       return row;
     })
-    .filter((r) => r.seq || r.birth || r.trackingNo || r.internalId);
+    .filter((r) => r.seq || r.trackingNo || r.internalId);
 }
 
 export default function Page() {
   const [headers, setHeaders] = useState([]);
   const [sheetJson, setSheetJson] = useState([]);
-  const [mapping, setMapping] = useState({ seq: '', birth: '', trackingNo: '', internalId: '' });
+  const [mapping, setMapping] = useState({ seq: '', trackingNo: '', internalId: '' });
   const [job, setJob] = useState(null);
   const [savedJobs, setSavedJobs] = useState([]);
   const [matchingJob, setMatchingJob] = useState(null);
@@ -287,7 +283,7 @@ export default function Page() {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       const statusOk = filter === '전체' || r.workStatus === filter || (filter === '성공' && ['성공', '수동입력'].includes(r.workStatus));
-      const qOk = !q || [r.seq, r.birth, r.trackingNo, r.internalId, r.deliveryStatus, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
+      const qOk = !q || [r.seq, r.trackingNo, r.internalId, r.deliveryStatus, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
       return statusOk && qOk;
     }).slice(0, 500);
   }, [job, filter, search]);
@@ -311,7 +307,6 @@ export default function Page() {
     const newHeaders = json[0].map(cleanString).filter(Boolean);
     const newMapping = {
       seq: findColumn(newHeaders, 'seq'),
-      birth: findColumn(newHeaders, 'birth'),
       trackingNo: findColumn(newHeaders, 'trackingNo'),
       internalId: findColumn(newHeaders, 'internalId')
     };
@@ -328,8 +323,68 @@ export default function Page() {
       const ratio = overlapRatio(candidateRows, old.rows || []);
       if (!best || ratio > best.ratio) best = { ...old, ratio };
     }
-    setMatchingJob(best && best.ratio >= 0.6 ? best : null);
-    setMessage(`파일을 읽었습니다. 컬럼 인식 결과를 확인하고 [이 설정으로 작업 생성]을 눌러 주세요.`);
+
+    if (!newMapping.trackingNo) {
+      setMatchingJob(best && best.ratio >= 0.6 ? best : null);
+      setMessage('등기번호 컬럼을 자동 인식하지 못했습니다. 등기번호 컬럼을 선택한 뒤 [이 설정으로 작업 생성]을 눌러 주세요.');
+      return;
+    }
+
+    // 파일 업로드만 하면 자동으로 작업 생성/병합 후 조회까지 시작합니다.
+    if (best && best.ratio >= 0.6) {
+      const oldByTracking = new Map((best.rows || []).map((r) => [r.trackingNo, r]));
+      const mergedRows = candidateRows.map((row) => {
+        const old = oldByTracking.get(row.trackingNo);
+        if (!old) return row;
+        return {
+          ...row,
+          deliveryStatus: old.deliveryStatus || '',
+          deliveryDate: old.deliveryDate || '',
+          lastDate: old.lastDate || '',
+          lastTime: old.lastTime || '',
+          postOffice: old.postOffice || '',
+          processStatus: old.processStatus || '',
+          detail: old.detail || '',
+          mailType: old.mailType || '',
+          treatmentType: old.treatmentType || '',
+          workStatus: old.workStatus === '조회중' ? '중단됨' : old.workStatus,
+          queryResult: old.queryResult || '',
+          failReason: old.failReason || '',
+          retryCount: old.retryCount || 0,
+          checkedAt: old.checkedAt || ''
+        };
+      });
+      const merged = saveJob({
+        ...best,
+        mapping: newMapping,
+        sourceFileName: file.name,
+        fingerprint: makeFingerprint(mergedRows),
+        rows: mergedRows
+      });
+      setJob(merged);
+      setSavedJobs(readIndex());
+      setMatchingJob(null);
+      setMessage(`이전 작업과 ${Math.round(best.ratio * 100)}% 일치하여 병합했습니다. 자동 조회를 시작합니다.`);
+      setTimeout(() => startQuery('resume', merged), 100);
+      return;
+    }
+
+    const newJob = {
+      jobId: `job_${Date.now()}`,
+      jobName: `등기배송조회_${todayCompact()}`,
+      sourceFileName: file.name,
+      createdAt: nowText(),
+      updatedAt: nowText(),
+      mapping: newMapping,
+      fingerprint: makeFingerprint(candidateRows),
+      rows: candidateRows
+    };
+    const saved = saveJob(newJob);
+    setJob(saved);
+    setSavedJobs(readIndex());
+    setMatchingJob(null);
+    setMessage(`파일을 읽고 작업을 자동 생성했습니다. 총 ${candidateRows.length}건, 자동 조회를 시작합니다.`);
+    setTimeout(() => startQuery('resume', saved), 100);
   }
 
   function createJobFromMapping() {
@@ -356,7 +411,8 @@ export default function Page() {
     setJob(saved);
     setSavedJobs(readIndex());
     setMatchingJob(null);
-    setMessage(`작업을 생성했습니다. 총 ${rows.length}건입니다.`);
+    setMessage(`작업을 생성했습니다. 총 ${rows.length}건, 자동 조회를 시작합니다.`);
+    setTimeout(() => startQuery('resume', saved), 100);
   }
 
   function mergeWithMatchingJob() {
@@ -395,7 +451,8 @@ export default function Page() {
     setJob(merged);
     setSavedJobs(readIndex());
     setMatchingJob(null);
-    setMessage('이전 작업 결과를 현재 엑셀에 병합했습니다. 이어서 조회할 수 있습니다.');
+    setMessage('이전 작업 결과를 현재 엑셀에 병합했습니다. 자동 조회를 시작합니다.');
+    setTimeout(() => startQuery('resume', merged), 100);
   }
 
   function updateRows(updater) {
@@ -439,19 +496,20 @@ export default function Page() {
     };
   }
 
-  async function startQuery(mode = 'resume') {
-    if (!job || isRunning) return;
+  async function startQuery(mode = 'resume', sourceJob = null) {
+    const activeJob = sourceJob || job;
+    if (!activeJob || isRunning) return;
     stopRef.current = false;
     pausedRef.current = false;
     setIsPaused(false);
     setIsRunning(true);
 
     try {
-      let baseRows = job.rows.map((r) => r.workStatus === '조회중' ? { ...r, workStatus: '중단됨' } : r);
+      let baseRows = activeJob.rows.map((r) => r.workStatus === '조회중' ? { ...r, workStatus: '중단됨' } : r);
       if (mode === 'all') {
         baseRows = baseRows.map((r) => ({ ...r, workStatus: r.trackingNo ? '대기' : '실패', queryResult: '', failReason: r.trackingNo ? '' : '등기번호 없음' }));
       }
-      let currentJob = saveJob({ ...job, rows: baseRows });
+      let currentJob = saveJob({ ...activeJob, rows: baseRows });
       setJob(currentJob);
 
       const shouldRun = (r) => {
@@ -493,7 +551,7 @@ export default function Page() {
       }
       setMessage(stopRef.current ? '조회가 중지되었습니다. 다음에 이어서 조회할 수 있습니다.' : (autoDownloadCsv ? '조회가 완료되어 전체 결과 CSV 다운로드를 시작했습니다.' : '조회가 완료되었습니다.'));
     } catch (error) {
-      const current = loadJob(job.jobId) || job;
+      const current = loadJob(activeJob.jobId) || activeJob;
       const fixedRows = current.rows.map((r) => r.workStatus === '조회중' ? { ...r, workStatus: '중단됨', failReason: error?.message || '중단됨' } : r);
       const saved = saveJob({ ...current, rows: fixedRows });
       setJob(saved);
@@ -593,7 +651,7 @@ export default function Page() {
         </div>
         <div className="heroCard">
           <strong>개인정보 최소화</strong>
-          <span>서버에는 등기번호만 전송합니다. 순번·생년월일·고객번호는 브라우저 내부 매칭용입니다.</span>
+          <span>서버에는 등기번호만 전송합니다. 순번·고객번호는 브라우저 내부 매칭용입니다.</span>
         </div>
       </section>
 
@@ -607,7 +665,6 @@ export default function Page() {
           {Array.isArray(headers) && headers.length > 0 && (
             <div className="mapping">
               <label>순번 컬럼<select value={mapping.seq} onChange={(e) => setMapping({ ...mapping, seq: e.target.value })}><option value="">없으면 자동 생성</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
-              <label>생년월일 컬럼<select value={mapping.birth} onChange={(e) => setMapping({ ...mapping, birth: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>등기번호 컬럼<select value={mapping.trackingNo} onChange={(e) => setMapping({ ...mapping, trackingNo: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>고객번호 컬럼<select value={mapping.internalId} onChange={(e) => setMapping({ ...mapping, internalId: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <button className="primary" onClick={createJobFromMapping}>이 설정으로 작업 생성</button>
@@ -698,7 +755,7 @@ export default function Page() {
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>생년월일</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -706,7 +763,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.seq}</td><td>{r.birth}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}
