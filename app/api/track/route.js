@@ -3,21 +3,13 @@ import { XMLParser } from 'fast-xml-parser';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// data.go.kr 공식 문서의 Service URL은 http 입니다.
-const ENDPOINTS = [
-  {
-    id: 'combined',
-    name: '우체국 통합 종적조회',
-    url: 'http://openapi.epost.go.kr/trace/retrieveLongitudinalCombinedService/retrieveLongitudinalCombinedService/getLongitudinalCombinedList',
-    parser: parseCombinedXml
-  },
-  {
-    id: 'domestic',
-    name: '국내우편물 종적조회',
-    url: 'http://openapi.epost.go.kr/trace/retrieveLongitudinalService/retrieveLongitudinalService/getLongitudinalDomesticList',
-    parser: parseDomesticXml
-  }
-];
+// 국내우편물 배송조회서비스 명세서 기준
+// 호출 URL: http://openapi.epost.go.kr/trace/retrieveLongitudinalService/retrieveLongitudinalService/getLongitudinalDomesticList?rgist=...&serviceKey=...
+const DOMESTIC_ENDPOINT = {
+  id: 'domestic',
+  name: '국내우편물 등기 배송조회 서비스',
+  url: 'http://openapi.epost.go.kr/trace/retrieveLongitudinalService/retrieveLongitudinalService/getLongitudinalDomesticList'
+};
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -30,7 +22,7 @@ const parser = new XMLParser({
 function serviceKeyQueryValue(key) {
   if (!key) return '';
   const trimmed = String(key).trim();
-  // data.go.kr 인증키는 Encoding/Decoding 2종이 있어 이중 인코딩 방지 처리
+  // data.go.kr의 Encoding 키는 이미 % 인코딩되어 있으므로 재인코딩하지 않습니다.
   return /%[0-9A-Fa-f]{2}/.test(trimmed) ? trimmed : encodeURIComponent(trimmed);
 }
 
@@ -43,6 +35,7 @@ function normalizeDate(value) {
   const s = String(value).trim();
   const compact = s.replace(/[^0-9]/g, '');
   if (compact.length === 8) return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
+  if (compact.length === 12) return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)} ${compact.slice(8, 10)}:${compact.slice(10, 12)}`;
   return s.replace(/\./g, '-');
 }
 
@@ -93,14 +86,17 @@ function collectDomesticEvents(obj) {
       detail: node.detailDc ? String(node.detailDc).trim() : ''
     });
   });
-
   events.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   return events;
 }
 
 function parseDomesticXml(xml, requestedTrackingNo) {
   const data = parser.parse(xml);
-  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'returnAuthMsg', 'returnReasonCode', 'resultMsg', 'resultCode']);
+
+  const successYN = findFirstValue(data, ['successYN', 'successYn', 'successyn']);
+  const returnCode = findFirstValue(data, ['returnCode', 'resultCode', 'returnReasonCode']);
+  const errMsg = findFirstValue(data, ['errMsg', 'errorMessage', 'resultMsg', 'returnAuthMsg']);
+
   const dlvySttus = findFirstValue(data, ['dlvySttus']);
   const dlvyDe = normalizeDate(findFirstValue(data, ['dlvyDe']));
   const pstmtrKnd = findFirstValue(data, ['pstmtrKnd']);
@@ -112,7 +108,12 @@ function parseDomesticXml(xml, requestedTrackingNo) {
   const last = events.length ? events[events.length - 1] : null;
 
   const status = dlvySttus || last?.processStatus || '';
-  const ok = Boolean(status || events.length || dlvyDe);
+  const ok = successYN === 'Y' || Boolean(status || events.length || dlvyDe);
+
+  let errorMessage = '';
+  if (!ok) {
+    errorMessage = errMsg || (returnCode ? `returnCode=${returnCode}` : '') || '조회 결과가 없거나 응답을 해석하지 못했습니다.';
+  }
 
   return {
     ok,
@@ -129,37 +130,9 @@ function parseDomesticXml(xml, requestedTrackingNo) {
     processStatus: last?.processStatus || status || '',
     detail: last?.detail || '',
     events,
-    errorMessage: ok ? '' : (errorMessage || '조회 결과가 없거나 응답을 해석하지 못했습니다.')
-  };
-}
-
-function parseCombinedXml(xml, requestedTrackingNo) {
-  const data = parser.parse(xml);
-  const successYn = findFirstValue(data, ['successYn']);
-  const errorMessage = findFirstValue(data, ['errorMessage', 'errMsg', 'resultMsg', 'returnAuthMsg', 'returnReasonCode', 'resultCode']);
-  const trackState = findFirstValue(data, ['trackState']);
-  const receiveDate = normalizeDate(findFirstValue(data, ['receiveDate']));
-  const senderData = normalizeDate(findFirstValue(data, ['senderData']));
-  const responseTime = findFirstValue(data, ['responseTime']);
-  const regiNo = findFirstValue(data, ['regiNo', 'requestRegiNo']) || requestedTrackingNo;
-
-  const ok = successYn === 'Y' || Boolean(trackState || receiveDate);
-  return {
-    ok,
-    trackingNo: regiNo,
-    deliveryStatus: trackState,
-    deliveryDate: receiveDate,
-    mailType: '',
-    treatmentType: '',
-    senderNameMasked: findFirstValue(data, ['senderName']),
-    receiverNameMasked: findFirstValue(data, ['receiveName']),
-    lastDate: receiveDate || senderData || '',
-    lastTime: responseTime ? String(responseTime).slice(11, 16) : '',
-    postOffice: '',
-    processStatus: trackState,
-    detail: '',
-    events: [],
-    errorMessage: ok ? '' : (errorMessage || '조회 결과가 없습니다.')
+    successYN,
+    returnCode,
+    errorMessage
   };
 }
 
@@ -183,12 +156,14 @@ function describeFetchError(error) {
 
 function rawExcerpt(text) {
   return String(text || '')
+    .replace(/(serviceKey|ServiceKey)=([^&<]+)/gi, '$1=***')
     .replace(/<ServiceKey>.*?<\/ServiceKey>/gi, '<ServiceKey>***</ServiceKey>')
-    .slice(0, 500);
+    .slice(0, 800);
 }
 
-async function callEpost(endpoint, serviceKey, rgist, { retries = 2, timeoutMs = 15000 } = {}) {
-  const url = `${endpoint.url}?ServiceKey=${serviceKeyQueryValue(serviceKey)}&rgist=${encodeURIComponent(rgist)}`;
+async function callDomestic(serviceKey, rgist, { retries = 2, timeoutMs = 20000 } = {}) {
+  // 명세서에는 파라미터명이 serviceKey 소문자로 되어 있어 이를 기본으로 사용합니다.
+  const url = `${DOMESTIC_ENDPOINT.url}?rgist=${encodeURIComponent(rgist)}&serviceKey=${serviceKeyQueryValue(serviceKey)}`;
   let lastError;
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -201,45 +176,20 @@ async function callEpost(endpoint, serviceKey, rgist, { retries = 2, timeoutMs =
         signal: controller.signal,
         headers: {
           'Accept': 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.1.5'
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.1.6'
         }
       });
       const text = await res.text();
       clearTimeout(timer);
-      return { endpointId: endpoint.id, endpointName: endpoint.name, status: res.status, text, attempt: attempt + 1 };
+      return { status: res.status, text, attempt: attempt + 1, urlForDebug: `${DOMESTIC_ENDPOINT.url}?rgist=${rgist}&serviceKey=***` };
     } catch (error) {
       clearTimeout(timer);
       lastError = error;
-      if (attempt < retries) await sleep(700 * (attempt + 1));
+      if (attempt < retries) await sleep(800 * (attempt + 1));
     }
   }
 
-  throw new Error(`${endpoint.name} fetch failed: ${describeFetchError(lastError)}`);
-}
-
-async function tryEndpoint(endpoint, serviceKey, rgist, debug) {
-  try {
-    const response = await callEpost(endpoint, serviceKey, rgist);
-    const parsed = endpoint.parser(response.text, rgist);
-    return {
-      endpoint: endpoint.id,
-      endpointName: endpoint.name,
-      httpStatus: response.status,
-      attempt: response.attempt,
-      parsed,
-      ok: parsed.ok,
-      errorMessage: parsed.ok ? '' : parsed.errorMessage,
-      rawExcerpt: debug ? rawExcerpt(response.text) : undefined
-    };
-  } catch (error) {
-    return {
-      endpoint: endpoint.id,
-      endpointName: endpoint.name,
-      ok: false,
-      thrown: true,
-      errorMessage: error?.message || 'fetch failed'
-    };
-  }
+  throw new Error(`${DOMESTIC_ENDPOINT.name} fetch failed: ${describeFetchError(lastError)}`);
 }
 
 export async function GET(request) {
@@ -254,33 +204,37 @@ export async function GET(request) {
   if (!rgist) {
     return Response.json({ ok: false, errorMessage: '등기번호가 비어 있습니다.' }, { status: 400 });
   }
-  if (rgist.length < 10 || rgist.length > 15) {
-    return Response.json({ ok: false, errorMessage: '등기번호 형식이 올바르지 않습니다.', trackingNo: rgist }, { status: 400 });
+  // 명세서에는 등기번호 13자리 설명과 항목크기 15가 함께 표기되어 있어 13~15자리까지 허용합니다.
+  if (rgist.length < 13 || rgist.length > 15) {
+    return Response.json({ ok: false, errorMessage: `등기번호 형식이 올바르지 않습니다. 숫자 13~15자리여야 합니다. 현재 ${rgist.length}자리입니다.`, trackingNo: rgist }, { status: 400 });
   }
 
-  const diagnostics = [];
+  try {
+    const response = await callDomestic(serviceKey, rgist);
+    const parsed = parseDomesticXml(response.text, rgist);
 
-  for (const endpoint of ENDPOINTS) {
-    const result = await tryEndpoint(endpoint, serviceKey, rgist, debug);
-    diagnostics.push(result);
-    if (result.ok) {
+    if (parsed.ok) {
       return Response.json({
-        ...result.parsed,
-        source: endpoint.id,
-        diagnostics: debug ? diagnostics : undefined
+        ...parsed,
+        source: DOMESTIC_ENDPOINT.id,
+        diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, httpStatus: response.status, attempt: response.attempt, parsed, rawExcerpt: rawExcerpt(response.text), url: response.urlForDebug }] : undefined
       });
     }
+
+    return Response.json({
+      ok: false,
+      trackingNo: rgist,
+      errorMessage: parsed.errorMessage,
+      source: DOMESTIC_ENDPOINT.id,
+      diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, httpStatus: response.status, attempt: response.attempt, parsed, rawExcerpt: rawExcerpt(response.text), url: response.urlForDebug }] : undefined
+    });
+  } catch (error) {
+    return Response.json({
+      ok: false,
+      trackingNo: rgist,
+      errorMessage: error?.message || 'fetch failed',
+      source: DOMESTIC_ENDPOINT.id,
+      diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, thrown: true, errorMessage: error?.message || String(error) }] : undefined
+    }, { status: 502 });
   }
-
-  const message = diagnostics
-    .map((d) => `${d.endpointName}: ${d.errorMessage || '조회 실패'}`)
-    .join(' / ');
-
-  return Response.json({
-    ok: false,
-    trackingNo: rgist,
-    errorMessage: message || '조회 결과가 없습니다.',
-    source: 'none',
-    diagnostics: debug ? diagnostics : undefined
-  });
 }
