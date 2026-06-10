@@ -81,16 +81,24 @@ function overlapRatio(aRows, bRows) {
 }
 
 function safeJsonParse(text, fallback) {
-  try { return JSON.parse(text); } catch { return fallback; }
+  if (text === undefined || text === null || text === '') return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed === undefined || parsed === null ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
 }
 
 function readIndex() {
   if (typeof window === 'undefined') return [];
-  return safeJsonParse(localStorage.getItem(STORAGE_INDEX), []);
+  const parsed = safeJsonParse(localStorage.getItem(STORAGE_INDEX), []);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 function writeIndex(index) {
-  localStorage.setItem(STORAGE_INDEX, JSON.stringify(index.slice(0, 30)));
+  const safeIndex = Array.isArray(index) ? index : [];
+  localStorage.setItem(STORAGE_INDEX, JSON.stringify(safeIndex.slice(0, 30)));
 }
 
 function saveJob(job) {
@@ -113,8 +121,9 @@ function saveJob(job) {
 }
 
 function loadJob(jobId) {
-  if (!jobId) return null;
-  return safeJsonParse(localStorage.getItem(STORAGE_PREFIX + jobId), null);
+  if (!jobId || typeof window === 'undefined') return null;
+  const parsed = safeJsonParse(localStorage.getItem(STORAGE_PREFIX + jobId), null);
+  return parsed && Array.isArray(parsed.rows) ? parsed : null;
 }
 
 function statusClass(status) {
@@ -587,7 +596,7 @@ export default function Page() {
           <h2>1. 엑셀/CSV 업로드</h2>
           <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFile(e.target.files?.[0])} />
           <p className="hint">첫 번째 시트를 읽습니다. 첫 행은 헤더로 인식합니다.</p>
-          {headers.length > 0 && (
+          {Array.isArray(headers) && headers.length > 0 && (
             <div className="mapping">
               <label>이름 컬럼<select value={mapping.name} onChange={(e) => setMapping({ ...mapping, name: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>생년월일 컬럼<select value={mapping.birth} onChange={(e) => setMapping({ ...mapping, birth: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
@@ -607,8 +616,8 @@ export default function Page() {
           </div>
           <div className="savedBox">
             <strong>저장된 작업</strong>
-            {savedJobs.length === 0 && <p className="hint">아직 저장된 작업이 없습니다.</p>}
-            {savedJobs.slice(0, 5).map((item) => (
+            {(!Array.isArray(savedJobs) || savedJobs.length === 0) && <p className="hint">아직 저장된 작업이 없습니다.</p>}
+            {(Array.isArray(savedJobs) ? savedJobs : []).slice(0, 5).map((item) => (
               <button key={item.jobId} className="savedItem" onClick={() => loadSaved(item.jobId)}>
                 <span>{item.jobName}</span>
                 <small>{item.done}/{item.total} · {item.updatedAt}</small>
