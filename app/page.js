@@ -8,14 +8,15 @@ const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
 
 const CANDIDATES = {
-  name: ['이름', '성명', '고객명', '채무자명', '발송대상자명', '수취인', '수취인명'],
+  seq: ['순번', '번호', 'no', 'NO', 'No', '연번'],
   birth: ['생년월일', '생년', '생일', '주민번호앞자리', '주민등록번호', '주민등록번호앞자리', '생년월일6자리'],
   trackingNo: ['등기번호', '우편물번호', '송장번호', '배송번호', '등기', 'tracking', 'rgist'],
-  internalId: ['관리번호', '내부관리번호', '고객번호', '사건번호', '계약번호', '채권번호', '발송번호', '일련번호']
+  // 화면/CSV에는 고객번호로 표시합니다. 내부 변수명은 기존 호환을 위해 internalId 유지.
+  internalId: ['고객번호', '고객관리번호', '고객NO', '고객No', '고객no', '고객ID', '고객id']
 };
 
 const DEFAULT_COLUMNS = [
-  '순번', '이름', '생년월일', '등기번호', '내부관리번호',
+  '순번', '생년월일', '등기번호', '고객번호',
   '배달상태', '최종처리일자', '최종처리시간', '처리우체국', '배달일자',
   '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각', '우편물종류', '취급구분'
 ];
@@ -61,7 +62,7 @@ function findColumn(headers, type) {
 }
 
 function makeRowId(row) {
-  return [row.name, row.birth, row.trackingNo, row.internalId].map(cleanString).join('|');
+  return [row.seq, row.birth, row.trackingNo, row.internalId].map(cleanString).join('|');
 }
 
 function makeFingerprint(rows) {
@@ -153,10 +154,9 @@ function toCsv(rows, mode = 'all') {
   };
 
   const lines = [DEFAULT_COLUMNS.join(',')];
-  filtered.forEach((r, index) => {
+  filtered.forEach((r) => {
     lines.push([
-      index + 1,
-      r.name,
+      r.seq,
       r.birth,
       r.trackingNo,
       r.internalId,
@@ -194,7 +194,7 @@ function parseSheetToRows(sheetJson, mapping) {
   const headers = headerRow.map(cleanString);
   const colIndex = (name) => headers.indexOf(name);
 
-  const nameIdx = colIndex(mapping.name);
+  const seqIdx = colIndex(mapping.seq);
   const birthIdx = colIndex(mapping.birth);
   const trackingIdx = colIndex(mapping.trackingNo);
   const internalIdx = colIndex(mapping.internalId);
@@ -203,7 +203,7 @@ function parseSheetToRows(sheetJson, mapping) {
     .map((arr, idx) => {
       const row = {
         sourceIndex: idx + 2,
-        name: nameIdx >= 0 ? cleanString(arr[nameIdx]) : '',
+        seq: seqIdx >= 0 ? cleanString(arr[seqIdx]) : String(idx + 1),
         birth: birthIdx >= 0 ? cleanString(arr[birthIdx]) : '',
         trackingNo: trackingIdx >= 0 ? cleanTrackingNo(arr[trackingIdx]) : '',
         internalId: internalIdx >= 0 ? cleanString(arr[internalIdx]) : '',
@@ -231,13 +231,13 @@ function parseSheetToRows(sheetJson, mapping) {
       }
       return row;
     })
-    .filter((r) => r.name || r.birth || r.trackingNo || r.internalId);
+    .filter((r) => r.seq || r.birth || r.trackingNo || r.internalId);
 }
 
 export default function Page() {
   const [headers, setHeaders] = useState([]);
   const [sheetJson, setSheetJson] = useState([]);
-  const [mapping, setMapping] = useState({ name: '', birth: '', trackingNo: '', internalId: '' });
+  const [mapping, setMapping] = useState({ seq: '', birth: '', trackingNo: '', internalId: '' });
   const [job, setJob] = useState(null);
   const [savedJobs, setSavedJobs] = useState([]);
   const [matchingJob, setMatchingJob] = useState(null);
@@ -249,6 +249,7 @@ export default function Page() {
   const [search, setSearch] = useState('');
   const [selectedRowId, setSelectedRowId] = useState('');
   const [apiTestNo, setApiTestNo] = useState('');
+  const [autoDownloadCsv, setAutoDownloadCsv] = useState(true);
   const stopRef = useRef(false);
   const pausedRef = useRef(false);
 
@@ -286,7 +287,7 @@ export default function Page() {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       const statusOk = filter === '전체' || r.workStatus === filter || (filter === '성공' && ['성공', '수동입력'].includes(r.workStatus));
-      const qOk = !q || [r.name, r.birth, r.trackingNo, r.internalId, r.deliveryStatus, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
+      const qOk = !q || [r.seq, r.birth, r.trackingNo, r.internalId, r.deliveryStatus, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
       return statusOk && qOk;
     }).slice(0, 500);
   }, [job, filter, search]);
@@ -309,7 +310,7 @@ export default function Page() {
     }
     const newHeaders = json[0].map(cleanString).filter(Boolean);
     const newMapping = {
-      name: findColumn(newHeaders, 'name'),
+      seq: findColumn(newHeaders, 'seq'),
       birth: findColumn(newHeaders, 'birth'),
       trackingNo: findColumn(newHeaders, 'trackingNo'),
       internalId: findColumn(newHeaders, 'internalId')
@@ -483,7 +484,14 @@ export default function Page() {
       const fixedRows = finalJob.rows.map((r) => r.workStatus === '조회중' ? { ...r, workStatus: '중단됨' } : r);
       const saved = saveJob({ ...finalJob, rows: fixedRows });
       setJob(saved);
-      setMessage(stopRef.current ? '조회가 중지되었습니다. 다음에 이어서 조회할 수 있습니다.' : '조회가 완료되었습니다.');
+      if (!stopRef.current && autoDownloadCsv) {
+        downloadBlob(
+          toCsv(saved.rows, 'all'),
+          `등기배송조회_전체_${todayCompact()}.csv`,
+          'text/csv;charset=utf-8'
+        );
+      }
+      setMessage(stopRef.current ? '조회가 중지되었습니다. 다음에 이어서 조회할 수 있습니다.' : (autoDownloadCsv ? '조회가 완료되어 전체 결과 CSV 다운로드를 시작했습니다.' : '조회가 완료되었습니다.'));
     } catch (error) {
       const current = loadJob(job.jobId) || job;
       const fixedRows = current.rows.map((r) => r.workStatus === '조회중' ? { ...r, workStatus: '중단됨', failReason: error?.message || '중단됨' } : r);
@@ -585,7 +593,7 @@ export default function Page() {
         </div>
         <div className="heroCard">
           <strong>개인정보 최소화</strong>
-          <span>서버에는 등기번호만 전송합니다. 이름·생년월일은 브라우저 내부 매칭용입니다.</span>
+          <span>서버에는 등기번호만 전송합니다. 순번·생년월일·고객번호는 브라우저 내부 매칭용입니다.</span>
         </div>
       </section>
 
@@ -598,10 +606,10 @@ export default function Page() {
           <p className="hint">첫 번째 시트를 읽습니다. 첫 행은 헤더로 인식합니다.</p>
           {Array.isArray(headers) && headers.length > 0 && (
             <div className="mapping">
-              <label>이름 컬럼<select value={mapping.name} onChange={(e) => setMapping({ ...mapping, name: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
+              <label>순번 컬럼<select value={mapping.seq} onChange={(e) => setMapping({ ...mapping, seq: e.target.value })}><option value="">없으면 자동 생성</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>생년월일 컬럼<select value={mapping.birth} onChange={(e) => setMapping({ ...mapping, birth: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>등기번호 컬럼<select value={mapping.trackingNo} onChange={(e) => setMapping({ ...mapping, trackingNo: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
-              <label>내부관리번호 컬럼<select value={mapping.internalId} onChange={(e) => setMapping({ ...mapping, internalId: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
+              <label>고객번호 컬럼<select value={mapping.internalId} onChange={(e) => setMapping({ ...mapping, internalId: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <button className="primary" onClick={createJobFromMapping}>이 설정으로 작업 생성</button>
             </div>
           )}
@@ -666,6 +674,7 @@ export default function Page() {
             <h2>4. 자동조회</h2>
             <div className="inline wrap controls">
               <label>조회 간격<select value={intervalMs} onChange={(e) => setIntervalMs(Number(e.target.value))} disabled={isRunning}><option value={700}>0.7초</option><option value={1200}>1.2초</option><option value={2000}>2초</option><option value={3000}>3초</option></select></label>
+              <label><input type="checkbox" checked={autoDownloadCsv} onChange={(e) => setAutoDownloadCsv(e.target.checked)} disabled={isRunning} /> 완료 시 전체 CSV 자동 다운로드</label>
               <button className="primary" onClick={() => startQuery('resume')} disabled={isRunning}>이어서 조회</button>
               <button onClick={() => startQuery('fail')} disabled={isRunning}>실패 건만 재조회</button>
               <button onClick={() => startQuery('all')} disabled={isRunning}>전체 재조회</button>
@@ -689,7 +698,7 @@ export default function Page() {
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>이름</th><th>생년월일</th><th>등기번호</th><th>관리번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>생년월일</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -697,7 +706,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.name}</td><td>{r.birth}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.birth}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}
