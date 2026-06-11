@@ -113,7 +113,7 @@ h2 { margin: 0 0 14px; font-size: 20px; }
 .progress { width: 100%; height: 14px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-top: 14px; }
 .progress > div { height: 100%; background: var(--primary); transition: width 0.25s ease; }
 .tableWrap { overflow: auto; border: 1px solid var(--line); border-radius: 14px; max-height: 540px; }
-table { width: 100%; border-collapse: collapse; min-width: 1300px; background: white; }
+table { width: 100%; border-collapse: collapse; min-width: 1900px; background: white; }
 th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px; white-space: nowrap; vertical-align: middle; }
 th { position: sticky; top: 0; background: #f8fafc; z-index: 1; color: #334155; text-align: left; }
 tr.selected td { background: var(--soft-blue); }
@@ -123,6 +123,7 @@ tr.selected td { background: var(--soft-blue); }
 .pill.bad { background: #fee2e2; color: var(--bad); }
 .pill.muted { background: #e5e7eb; color: #6b7280; }
 .failText { color: var(--bad); max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.historyText { max-width: 360px; overflow: hidden; text-overflow: ellipsis; color: #475569; }
 .hidden { display: none; }
 
 @media (max-width: 960px) {

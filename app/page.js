@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 const STORAGE_PREFIX = 'epost-tracking-job:';
 const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
-const APP_VERSION = 'v0.2.3-date-gui-fixed';
+const APP_VERSION = 'v0.2.5-all-api-fields';
 
 const CANDIDATES = {
   // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
@@ -17,8 +17,10 @@ const CANDIDATES = {
 
 const DEFAULT_COLUMNS = [
   '순번', '등기번호', '고객번호',
+  '발송인', '수취인', '우편물종류', '취급구분',
   '배달상태', '일자구분', '처리일자', '처리시간', '처리우체국',
-  '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각', '우편물종류', '취급구분'
+  '처리현황', '상세설명', '미송달사유', 'API배달일자', '종적이력',
+  '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각'
 ];
 
 function nowText() {
@@ -184,18 +186,25 @@ function toCsv(rows, mode = 'all') {
       r.seq,
       r.trackingNo,
       r.internalId,
+      r.senderName,
+      r.receiverName,
+      r.mailType,
+      r.treatmentType,
       r.deliveryStatus,
       r.statusDateLabel || inferDateLabel(r),
       r.lastDate,
       r.lastTime,
       r.postOffice,
+      r.processStatus,
+      r.detail,
+      r.undeliveredReason,
+      r.apiDeliveryDate,
+      r.eventHistoryText,
       r.workStatus,
       r.queryResult,
       r.failReason,
       r.retryCount,
-      r.checkedAt,
-      r.mailType,
-      r.treatmentType
+      r.checkedAt
     ].map(escape).join(','));
   });
   return '\ufeff' + lines.join('\r\n');
@@ -229,16 +238,20 @@ function parseSheetToRows(sheetJson, mapping) {
         seq: String(idx + 1),
         trackingNo: trackingIdx >= 0 ? cleanTrackingNo(arr[trackingIdx]) : '',
         internalId: internalIdx >= 0 ? cleanString(arr[internalIdx]) : '',
+        senderName: '',
+        receiverName: '',
+        mailType: '',
+        treatmentType: '',
         deliveryStatus: '',
-        deliveryDate: '',
         statusDateLabel: '',
         lastDate: '',
         lastTime: '',
         postOffice: '',
         processStatus: '',
         detail: '',
-        mailType: '',
-        treatmentType: '',
+        undeliveredReason: '',
+        apiDeliveryDate: '',
+        eventHistoryText: '',
         workStatus: '대기',
         queryResult: '',
         failReason: '',
@@ -310,7 +323,7 @@ export default function Page() {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       const statusOk = filter === '전체' || r.workStatus === filter || (filter === '성공' && ['성공', '수동입력'].includes(r.workStatus));
-      const qOk = !q || [r.seq, r.trackingNo, r.internalId, r.deliveryStatus, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
+      const qOk = !q || [r.seq, r.trackingNo, r.internalId, r.deliveryStatus, r.processStatus, r.detail, r.undeliveredReason, r.senderName, r.receiverName, r.failReason].some((v) => String(v || '').toLowerCase().includes(q));
       return statusOk && qOk;
     }).slice(0, 500);
   }, [job, filter, search]);
@@ -365,16 +378,20 @@ export default function Page() {
         if (!old) return row;
         return {
           ...row,
+          senderName: old.senderName || old.senderNameMasked || '',
+          receiverName: old.receiverName || old.receiverNameMasked || '',
+          mailType: old.mailType || '',
+          treatmentType: old.treatmentType || '',
           deliveryStatus: old.deliveryStatus || '',
-          deliveryDate: old.deliveryDate || '',
           statusDateLabel: old.statusDateLabel || inferDateLabel(old),
+          apiDeliveryDate: old.apiDeliveryDate || old.deliveryDate || '',
           lastDate: old.lastDate || '',
           lastTime: old.lastTime || '',
           postOffice: old.postOffice || '',
           processStatus: old.processStatus || '',
           detail: old.detail || '',
-          mailType: old.mailType || '',
-          treatmentType: old.treatmentType || '',
+          undeliveredReason: old.undeliveredReason || '',
+          eventHistoryText: old.eventHistoryText || '',
           workStatus: old.workStatus === '조회중' ? '중단됨' : old.workStatus,
           queryResult: old.queryResult || '',
           failReason: old.failReason || '',
@@ -452,16 +469,20 @@ export default function Page() {
       if (!old) return row;
       return {
         ...row,
+        senderName: old.senderName || old.senderNameMasked || '',
+        receiverName: old.receiverName || old.receiverNameMasked || '',
+        mailType: old.mailType || '',
+        treatmentType: old.treatmentType || '',
         deliveryStatus: old.deliveryStatus || '',
-        deliveryDate: old.deliveryDate || '',
+        apiDeliveryDate: old.apiDeliveryDate || old.deliveryDate || '',
         statusDateLabel: old.statusDateLabel || inferDateLabel(old),
         lastDate: old.lastDate || '',
         lastTime: old.lastTime || '',
         postOffice: old.postOffice || '',
         processStatus: old.processStatus || '',
         detail: old.detail || '',
-        mailType: old.mailType || '',
-        treatmentType: old.treatmentType || '',
+        undeliveredReason: old.undeliveredReason || '',
+        eventHistoryText: old.eventHistoryText || '',
         workStatus: old.workStatus === '조회중' ? '중단됨' : old.workStatus,
         queryResult: old.queryResult || '',
         failReason: old.failReason || '',
@@ -509,16 +530,20 @@ export default function Page() {
     }
     return {
       ...row,
+      senderName: data.senderNameMasked || data.senderName || '',
+      receiverName: data.receiverNameMasked || data.receiverName || '',
+      mailType: data.mailType || '',
+      treatmentType: data.treatmentType || '',
       deliveryStatus: data.deliveryStatus || data.processStatus || '',
-      deliveryDate: data.deliveryDate || ((String(data.deliveryStatus || data.processStatus || '').includes('배달완료') || String(data.deliveryStatus || data.processStatus || '').includes('배송완료') || String(data.deliveryStatus || data.processStatus || '').includes('반송배달') || String(data.deliveryStatus || data.processStatus || '').includes('반송완료')) ? (data.lastDate || '') : ''),
       statusDateLabel: data.statusDateLabel || inferDateLabel(data.deliveryStatus || data.processStatus || ''),
+      apiDeliveryDate: data.deliveryDate || '',
       lastDate: data.statusDate || data.lastDate || data.deliveryDate || '',
       lastTime: data.lastTime || '',
       postOffice: data.postOffice || '',
       processStatus: data.processStatus || '',
       detail: data.detail || '',
-      mailType: data.mailType || '',
-      treatmentType: data.treatmentType || '',
+      undeliveredReason: data.undeliveredReason || '',
+      eventHistoryText: data.eventHistoryText || '',
       workStatus: '성공',
       queryResult: '성공',
       failReason: '',
@@ -676,7 +701,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.2.2</p>
+          <p className="eyebrow">Vercel / Next.js v0.2.5</p>
           <h1>등기 배송상태 일괄조회 도구 <span className="versionBadge">{APP_VERSION}</span></h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
@@ -782,12 +807,12 @@ export default function Page() {
                 <input placeholder="검색" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
             </div>
-            <p className="hint strongHint">날짜는 중복 컬럼 없이 표시합니다. 배달완료는 <b>배달완료일자</b>, 반송배달은 <b>반송배달일자</b>, 그 외 진행 상태는 <b>최종처리일자</b>로 표시됩니다.</p>
+            <p className="hint strongHint">이 버전은 국내우편물 종적조회 API 문서의 응답값을 모두 반영합니다. 발송인/수취인/우편물종류/취급구분/처리현황/상세설명/미송달사유/종적이력까지 CSV에 포함됩니다.</p>
             <div className="tableWrap">
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>일자구분</th><th>처리일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>발송인</th><th>수취인</th><th>우편물종류</th><th>취급구분</th><th>배달상태</th><th>일자구분</th><th>처리일자</th><th>시간</th><th>우체국</th><th>처리현황</th><th>상세설명</th><th>미송달사유</th><th>API배달일자</th><th>종적이력</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -795,7 +820,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.statusDateLabel || inferDateLabel(r)}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.senderName}</td><td>{r.receiverName}</td><td>{r.mailType}</td><td>{r.treatmentType}</td><td>{r.deliveryStatus}</td><td>{r.statusDateLabel || inferDateLabel(r)}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td>{r.processStatus}</td><td>{r.detail}</td><td>{r.undeliveredReason}</td><td>{r.apiDeliveryDate}</td><td className="historyText">{r.eventHistoryText}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}
