@@ -148,14 +148,16 @@ function parseDomesticXml(xml, requestedTrackingNo) {
 
   const events = collectDomesticEvents(data);
   const last = events.length ? events[events.length - 1] : null;
-  const deliveredEvent = [...events].reverse().find((event) => {
+  const completionEvent = [...events].reverse().find((event) => {
     const text = `${event.processStatus || ''} ${event.detail || ''}`;
-    return text.includes('배달완료') || text.includes('배송완료');
+    // dlvyDe가 비는 경우가 있어, 최종 완료성 상태의 종적 일자를 보조 일자로 씁니다.
+    // 정상 배달완료는 '배달완료일', 반송배달은 '반송물이 발송인 쪽에 배달된 일자'로 해석합니다.
+    return text.includes('배달완료') || text.includes('배송완료') || text.includes('반송배달') || text.includes('반송완료');
   });
 
   const status = deliveryStatusByDoc || last?.processStatus || '';
-  // 문서상 배달일자는 dlvyDe가 정답. 다만 일부 응답에서 dlvyDe가 비어 있으면 종적목록의 배달완료 이벤트 날짜로 보정합니다.
-  const deliveryDate = deliveryDateByDoc || deliveredEvent?.date || '';
+  // 문서상 배달일자는 dlvyDe가 정답. 다만 일부 응답에서 dlvyDe가 비어 있으면 완료성 종적 이벤트 날짜로 보정합니다.
+  const deliveryDate = deliveryDateByDoc || completionEvent?.date || '';
   const ok = successYN === 'Y' || Boolean(status || events.length || deliveryDate || rgist);
 
   let errorMessage = '';
@@ -168,6 +170,8 @@ function parseDomesticXml(xml, requestedTrackingNo) {
     trackingNo: rgist,
     deliveryStatus: status,
     deliveryDate,
+    statusDate: last?.date || deliveryDate || '',
+    statusDateLabel: status && status.includes('반송') ? '반송배달일자' : (status && (status.includes('완료') || status.includes('배달'))) ? '배달처리일자' : '최종처리일자',
     mailType: pstmtrKnd,
     treatmentType: trtmntSe,
     senderNameMasked: applcntNm,
@@ -210,6 +214,12 @@ function describeFetchError(error) {
   return parts.join(' | ') || 'fetch failed';
 }
 
+
+function isTransientNetworkErrorMessage(message) {
+  const s = String(message || '').toUpperCase();
+  return s.includes('ECONNRESET') || s.includes('ETIMEDOUT') || s.includes('UND_ERR') || s.includes('ABORT') || s.includes('FETCH FAILED') || s.includes('EAI_AGAIN');
+}
+
 function rawExcerpt(text) {
   return String(text || '')
     .replace(/(serviceKey|ServiceKey)=([^&<]+)/gi, '$1=***')
@@ -217,7 +227,7 @@ function rawExcerpt(text) {
     .slice(0, 1000);
 }
 
-async function callDomestic(serviceKey, rgist, { retries = 2, timeoutMs = 20000 } = {}) {
+async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 } = {}) {
   // 국내우편물 종적조회는 epost 쪽 예제에서 serviceKey를 사용합니다.
   const url = `${DOMESTIC_ENDPOINT.url}?rgist=${encodeURIComponent(rgist)}&serviceKey=${serviceKeyQueryValue(serviceKey)}`;
   let lastError;
@@ -232,7 +242,8 @@ async function callDomestic(serviceKey, rgist, { retries = 2, timeoutMs = 20000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.1.9'
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.0',
+          'Connection': 'close'
         }
       });
       const text = await res.text();
@@ -241,7 +252,7 @@ async function callDomestic(serviceKey, rgist, { retries = 2, timeoutMs = 20000 
     } catch (error) {
       clearTimeout(timer);
       lastError = error;
-      if (attempt < retries) await sleep(800 * (attempt + 1));
+      if (attempt < retries) await sleep(Math.min(8000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250));
     }
   }
 
@@ -285,12 +296,16 @@ export async function GET(request) {
       diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, httpStatus: response.status, attempt: response.attempt, parsed, rawExcerpt: rawExcerpt(response.text), url: response.urlForDebug }] : undefined
     });
   } catch (error) {
+    const errorMessage = error?.message || 'fetch failed';
+    const transient = isTransientNetworkErrorMessage(errorMessage);
     return Response.json({
       ok: false,
       trackingNo: rgist,
-      errorMessage: error?.message || 'fetch failed',
+      errorMessage,
+      transient,
+      retryable: transient,
       source: DOMESTIC_ENDPOINT.id,
-      diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, thrown: true, errorMessage: error?.message || String(error) }] : undefined
-    }, { status: 502 });
+      diagnostics: debug ? [{ endpoint: DOMESTIC_ENDPOINT.id, thrown: true, transient, errorMessage: error?.message || String(error) }] : undefined
+    }, { status: transient ? 503 : 502 });
   }
 }

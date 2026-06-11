@@ -16,7 +16,7 @@ const CANDIDATES = {
 
 const DEFAULT_COLUMNS = [
   '순번', '등기번호', '고객번호',
-  '배달상태', '최종처리일자', '최종처리시간', '처리우체국', '배달일자',
+  '배달상태', '상태기준일자', '최종처리시간', '처리우체국', '배달/반송일자',
   '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각', '우편물종류', '취급구분'
 ];
 
@@ -254,7 +254,7 @@ export default function Page() {
   const [message, setMessage] = useState('엑셀 또는 CSV 파일을 업로드해 주세요.');
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [intervalMs, setIntervalMs] = useState(1200);
+  const [intervalMs, setIntervalMs] = useState(2300);
   const [filter, setFilter] = useState('전체');
   const [search, setSearch] = useState('');
   const [selectedRowId, setSelectedRowId] = useState('');
@@ -482,11 +482,12 @@ export default function Page() {
     const res = await fetch(`/api/track?rgist=${encodeURIComponent(row.trackingNo)}`, { cache: 'no-store' });
     const data = await res.json();
     if (!res.ok || !data.ok) {
+      const isTransient = data.retryable || data.transient || String(data.errorMessage || '').includes('ECONNRESET') || String(data.errorMessage || '').includes('fetch failed');
       return {
         ...row,
         workStatus: '실패',
-        queryResult: '실패',
-        failReason: data.errorMessage || `HTTP ${res.status}`,
+        queryResult: isTransient ? '일시실패' : '실패',
+        failReason: `${data.errorMessage || `HTTP ${res.status}`}${isTransient ? ' / 일시 네트워크 오류: 실패 건 재조회 대상' : ''}`,
         retryCount: (row.retryCount || 0) + 1,
         checkedAt: nowText()
       };
@@ -494,8 +495,8 @@ export default function Page() {
     return {
       ...row,
       deliveryStatus: data.deliveryStatus || data.processStatus || '',
-      deliveryDate: data.deliveryDate || ((String(data.deliveryStatus || data.processStatus || '').includes('배달완료') || String(data.deliveryStatus || data.processStatus || '').includes('배송완료')) ? (data.lastDate || '') : ''),
-      lastDate: data.lastDate || '',
+      deliveryDate: data.deliveryDate || ((String(data.deliveryStatus || data.processStatus || '').includes('배달완료') || String(data.deliveryStatus || data.processStatus || '').includes('배송완료') || String(data.deliveryStatus || data.processStatus || '').includes('반송배달') || String(data.deliveryStatus || data.processStatus || '').includes('반송완료')) ? (data.lastDate || '') : ''),
+      lastDate: data.statusDate || data.lastDate || '',
       lastTime: data.lastTime || '',
       postOffice: data.postOffice || '',
       processStatus: data.processStatus || '',
@@ -603,7 +604,7 @@ export default function Page() {
     try {
       const res = await fetch(`/api/track?rgist=${encodeURIComponent(no)}`, { cache: 'no-store' });
       const data = await res.json();
-      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'} / 배달일자: ${data.deliveryDate || '없음'}` : `API 테스트 실패: ${data.errorMessage}`);
+      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'} / 배달·반송일자: ${data.deliveryDate || '없음'} / 상태기준일자: ${data.statusDate || data.lastDate || '없음'}` : `API 테스트 실패: ${data.errorMessage}`);
     } catch (e) {
       setMessage(`API 테스트 오류: ${e?.message || e}`);
     }
@@ -659,7 +660,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.1.8</p>
+          <p className="eyebrow">Vercel / Next.js v0.2.0</p>
           <h1>등기 배송상태 일괄조회 도구</h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
@@ -744,7 +745,7 @@ export default function Page() {
           <section className="card">
             <h2>4. 자동조회</h2>
             <div className="inline wrap controls">
-              <label>조회 간격<select value={intervalMs} onChange={(e) => setIntervalMs(Number(e.target.value))} disabled={isRunning}><option value={700}>0.7초</option><option value={1200}>1.2초</option><option value={2000}>2초</option><option value={3000}>3초</option></select></label>
+              <label>조회 간격<select value={intervalMs} onChange={(e) => setIntervalMs(Number(e.target.value))} disabled={isRunning}><option value={1500}>1.5초</option><option value={2300}>2.3초 권장</option><option value={3000}>3초</option><option value={5000}>5초</option></select></label>
               <label><input type="checkbox" checked={autoDownloadCsv} onChange={(e) => setAutoDownloadCsv(e.target.checked)} disabled={isRunning} /> 완료 시 전체 CSV 자동 다운로드</label>
               <button className="primary" onClick={() => startQuery('resume')} disabled={isRunning}>이어서 조회</button>
               <button onClick={() => startQuery('fail')} disabled={isRunning}>실패 건만 재조회</button>
@@ -769,7 +770,7 @@ export default function Page() {
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>배달일자</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>상태기준일자</th><th>시간</th><th>우체국</th><th>배달/반송일자</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
