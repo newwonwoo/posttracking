@@ -126,6 +126,39 @@ function collectDomesticEvents(data) {
   return unique;
 }
 
+
+function makeEventHistoryText(events) {
+  return (events || [])
+    .map((event) => [event.date, event.time, event.postOffice, event.processStatus, event.detail].filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function pickUndeliveredReason(status, events) {
+  const s = String(status || '');
+  const eventList = Array.isArray(events) ? events : [];
+  const reasonKeywords = ['반송', '미배달', '배달불능', '부재', '폐문', '주소', '수취인', '보관', '이사', '불명', '거절'];
+  const isDelivered = s.includes('배달완료') || s.includes('배송완료');
+  const hasIssueStatus = !isDelivered && (s.includes('반송') || reasonKeywords.some((kw) => s.includes(kw)));
+  if (!hasIssueStatus) return '';
+
+  const candidates = [...eventList].reverse();
+  const detailed = candidates.find((event) => {
+    const text = `${event.processStatus || ''} ${event.detail || ''}`;
+    return event.detail && reasonKeywords.some((kw) => text.includes(kw));
+  });
+  if (detailed?.detail) return detailed.detail;
+
+  const anyDetail = candidates.find((event) => event.detail)?.detail;
+  if (anyDetail) return anyDetail;
+
+  const issueProcess = candidates.find((event) => {
+    const text = `${event.processStatus || ''} ${event.detail || ''}`;
+    return reasonKeywords.some((kw) => text.includes(kw));
+  });
+  return issueProcess?.processStatus || '';
+}
+
 function parseDomesticXml(xml, requestedTrackingNo) {
   const data = parser.parse(xml);
   const nodes = collectNodes(data);
@@ -156,6 +189,8 @@ function parseDomesticXml(xml, requestedTrackingNo) {
   });
 
   const status = deliveryStatusByDoc || last?.processStatus || '';
+  const eventHistoryText = makeEventHistoryText(events);
+  const undeliveredReason = pickUndeliveredReason(status, events);
   // 문서상 배달일자는 dlvyDe가 정답. 다만 일부 응답에서 dlvyDe가 비어 있으면 완료성 종적 이벤트 날짜로 보정합니다.
   const deliveryDate = deliveryDateByDoc || completionEvent?.date || '';
   const ok = successYN === 'Y' || Boolean(status || events.length || deliveryDate || rgist);
@@ -181,6 +216,8 @@ function parseDomesticXml(xml, requestedTrackingNo) {
     postOffice: last?.postOffice || '',
     processStatus: last?.processStatus || status || '',
     detail: last?.detail || '',
+    undeliveredReason,
+    eventHistoryText,
     events,
     successYN,
     returnCode,
@@ -191,7 +228,9 @@ function parseDomesticXml(xml, requestedTrackingNo) {
       firstDlvyDate: firstValueFromNodes(nodes, ['dlvyDate']),
       firstDlvyTime: firstValueFromNodes(nodes, ['dlvyTime']),
       firstNowLc: firstValueFromNodes(nodes, ['nowLc']),
-      firstProcessSttus: firstValueFromNodes(nodes, ['processSttus'])
+      firstProcessSttus: firstValueFromNodes(nodes, ['processSttus']),
+      firstDetailDc: firstValueFromNodes(nodes, ['detailDc']),
+      eventCount: events.length
     }
   };
 }
@@ -242,7 +281,7 @@ async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.2',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.5',
           'Connection': 'close'
         }
       });
