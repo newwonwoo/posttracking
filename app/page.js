@@ -16,7 +16,7 @@ const CANDIDATES = {
 
 const DEFAULT_COLUMNS = [
   '순번', '등기번호', '고객번호',
-  '배달상태', '상태기준일자', '최종처리시간', '처리우체국', '배달/반송일자',
+  '배달상태', '일자구분', '처리일자', '처리시간', '처리우체국',
   '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각', '우편물종류', '취급구분'
 ];
 
@@ -140,6 +140,17 @@ function loadJob(jobId) {
   return parsed && Array.isArray(parsed.rows) ? { ...parsed, rows: normalizeRowsSequence(parsed.rows) } : null;
 }
 
+
+function inferDateLabel(rowOrStatus) {
+  const status = typeof rowOrStatus === 'string'
+    ? rowOrStatus
+    : String(rowOrStatus?.deliveryStatus || rowOrStatus?.processStatus || '');
+  if (status.includes('반송')) return '반송배달일자';
+  if (status.includes('배달완료') || status.includes('배송완료')) return '배달완료일자';
+  if (status.includes('완료')) return '완료처리일자';
+  return '최종처리일자';
+}
+
 function statusClass(status) {
   if (status === '성공' || status === '수동입력') return 'good';
   if (status === '실패') return 'bad';
@@ -173,10 +184,10 @@ function toCsv(rows, mode = 'all') {
       r.trackingNo,
       r.internalId,
       r.deliveryStatus,
+      r.statusDateLabel || inferDateLabel(r),
       r.lastDate,
       r.lastTime,
       r.postOffice,
-      r.deliveryDate,
       r.workStatus,
       r.queryResult,
       r.failReason,
@@ -219,6 +230,7 @@ function parseSheetToRows(sheetJson, mapping) {
         internalId: internalIdx >= 0 ? cleanString(arr[internalIdx]) : '',
         deliveryStatus: '',
         deliveryDate: '',
+        statusDateLabel: '',
         lastDate: '',
         lastTime: '',
         postOffice: '',
@@ -354,6 +366,7 @@ export default function Page() {
           ...row,
           deliveryStatus: old.deliveryStatus || '',
           deliveryDate: old.deliveryDate || '',
+          statusDateLabel: old.statusDateLabel || inferDateLabel(old),
           lastDate: old.lastDate || '',
           lastTime: old.lastTime || '',
           postOffice: old.postOffice || '',
@@ -440,6 +453,7 @@ export default function Page() {
         ...row,
         deliveryStatus: old.deliveryStatus || '',
         deliveryDate: old.deliveryDate || '',
+        statusDateLabel: old.statusDateLabel || inferDateLabel(old),
         lastDate: old.lastDate || '',
         lastTime: old.lastTime || '',
         postOffice: old.postOffice || '',
@@ -496,7 +510,8 @@ export default function Page() {
       ...row,
       deliveryStatus: data.deliveryStatus || data.processStatus || '',
       deliveryDate: data.deliveryDate || ((String(data.deliveryStatus || data.processStatus || '').includes('배달완료') || String(data.deliveryStatus || data.processStatus || '').includes('배송완료') || String(data.deliveryStatus || data.processStatus || '').includes('반송배달') || String(data.deliveryStatus || data.processStatus || '').includes('반송완료')) ? (data.lastDate || '') : ''),
-      lastDate: data.statusDate || data.lastDate || '',
+      statusDateLabel: data.statusDateLabel || inferDateLabel(data.deliveryStatus || data.processStatus || ''),
+      lastDate: data.statusDate || data.lastDate || data.deliveryDate || '',
       lastTime: data.lastTime || '',
       postOffice: data.postOffice || '',
       processStatus: data.processStatus || '',
@@ -604,7 +619,7 @@ export default function Page() {
     try {
       const res = await fetch(`/api/track?rgist=${encodeURIComponent(no)}`, { cache: 'no-store' });
       const data = await res.json();
-      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'} / 배달·반송일자: ${data.deliveryDate || '없음'} / 상태기준일자: ${data.statusDate || data.lastDate || '없음'}` : `API 테스트 실패: ${data.errorMessage}`);
+      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'} / ${data.statusDateLabel || inferDateLabel(data.deliveryStatus || data.processStatus || '')}: ${data.statusDate || data.lastDate || data.deliveryDate || '없음'}` : `API 테스트 실패: ${data.errorMessage}`);
     } catch (e) {
       setMessage(`API 테스트 오류: ${e?.message || e}`);
     }
@@ -660,7 +675,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.2.0</p>
+          <p className="eyebrow">Vercel / Next.js v0.2.2</p>
           <h1>등기 배송상태 일괄조회 도구</h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
@@ -770,7 +785,7 @@ export default function Page() {
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>상태기준일자</th><th>시간</th><th>우체국</th><th>배달/반송일자</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>일자구분</th><th>처리일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -778,7 +793,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td>{r.deliveryDate}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.statusDateLabel || inferDateLabel(r)}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}

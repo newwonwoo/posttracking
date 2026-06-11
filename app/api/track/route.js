@@ -171,7 +171,7 @@ function parseDomesticXml(xml, requestedTrackingNo) {
     deliveryStatus: status,
     deliveryDate,
     statusDate: last?.date || deliveryDate || '',
-    statusDateLabel: status && status.includes('반송') ? '반송배달일자' : (status && (status.includes('완료') || status.includes('배달'))) ? '배달처리일자' : '최종처리일자',
+    statusDateLabel: status && status.includes('반송') ? '반송배달일자' : (status && (status.includes('배달완료') || status.includes('배송완료'))) ? '배달완료일자' : '최종처리일자',
     mailType: pstmtrKnd,
     treatmentType: trtmntSe,
     senderNameMasked: applcntNm,
@@ -242,7 +242,7 @@ async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.0',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.2',
           'Connection': 'close'
         }
       });
