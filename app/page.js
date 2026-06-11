@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 const STORAGE_PREFIX = 'epost-tracking-job:';
 const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
+const APP_VERSION = 'v0.2.3-date-gui-fixed';
 
 const CANDIDATES = {
   // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
@@ -676,7 +677,7 @@ export default function Page() {
       <section className="hero">
         <div>
           <p className="eyebrow">Vercel / Next.js v0.2.2</p>
-          <h1>등기 배송상태 일괄조회 도구</h1>
+          <h1>등기 배송상태 일괄조회 도구 <span className="versionBadge">{APP_VERSION}</span></h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
         <div className="heroCard">
@@ -781,6 +782,7 @@ export default function Page() {
                 <input placeholder="검색" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
             </div>
+            <p className="hint strongHint">날짜는 중복 컬럼 없이 표시합니다. 배달완료는 <b>배달완료일자</b>, 반송배달은 <b>반송배달일자</b>, 그 외 진행 상태는 <b>최종처리일자</b>로 표시됩니다.</p>
             <div className="tableWrap">
               <table>
                 <thead>
