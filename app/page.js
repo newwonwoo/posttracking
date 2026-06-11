@@ -8,7 +8,7 @@ const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
 
 const CANDIDATES = {
-  seq: ['순번', '번호', 'no', 'NO', 'No', '연번'],
+  // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
   trackingNo: ['등기번호', '우편물번호', '송장번호', '배송번호', '등기', 'tracking', 'rgist'],
   // 화면/CSV에는 고객번호로 표시합니다. 내부 변수명은 기존 호환을 위해 internalId 유지.
   internalId: ['고객번호', '고객관리번호', '고객NO', '고객No', '고객no', '고객ID', '고객id']
@@ -60,8 +60,22 @@ function findColumn(headers, type) {
   return '';
 }
 
-function makeRowId(row) {
-  return [row.seq, row.trackingNo, row.internalId].map(cleanString).join('|');
+function makeRowId(row, index = 0) {
+  // 순번은 표시/출력용이므로 rowId에 쓰지 않습니다.
+  // 고객번호가 등기번호와 같거나 비어 있어도 행 순서(sourceIndex)까지 넣어 중복을 막습니다.
+  return [row.sourceIndex ?? index + 2, row.trackingNo, row.internalId].map(cleanString).join('|');
+}
+
+function normalizeRowsSequence(rows) {
+  return (Array.isArray(rows) ? rows : []).map((row, index) => {
+    const sourceIndex = row.sourceIndex ?? index + 2;
+    const normalized = {
+      ...row,
+      sourceIndex,
+      seq: String(index + 1)
+    };
+    return { ...normalized, rowId: makeRowId(normalized, index) };
+  });
 }
 
 function makeFingerprint(rows) {
@@ -102,7 +116,7 @@ function writeIndex(index) {
 }
 
 function saveJob(job) {
-  const updatedJob = { ...job, updatedAt: nowText() };
+  const updatedJob = { ...job, rows: normalizeRowsSequence(job?.rows || []), updatedAt: nowText() };
   localStorage.setItem(STORAGE_PREFIX + updatedJob.jobId, JSON.stringify(updatedJob));
   localStorage.setItem(CURRENT_JOB, updatedJob.jobId);
   const index = readIndex().filter((item) => item.jobId !== updatedJob.jobId);
@@ -123,7 +137,7 @@ function saveJob(job) {
 function loadJob(jobId) {
   if (!jobId || typeof window === 'undefined') return null;
   const parsed = safeJsonParse(localStorage.getItem(STORAGE_PREFIX + jobId), null);
-  return parsed && Array.isArray(parsed.rows) ? parsed : null;
+  return parsed && Array.isArray(parsed.rows) ? { ...parsed, rows: normalizeRowsSequence(parsed.rows) } : null;
 }
 
 function statusClass(status) {
@@ -192,7 +206,6 @@ function parseSheetToRows(sheetJson, mapping) {
   const headers = headerRow.map(cleanString);
   const colIndex = (name) => headers.indexOf(name);
 
-  const seqIdx = colIndex(mapping.seq);
   const trackingIdx = colIndex(mapping.trackingNo);
   const internalIdx = colIndex(mapping.internalId);
 
@@ -200,7 +213,8 @@ function parseSheetToRows(sheetJson, mapping) {
     .map((arr, idx) => {
       const row = {
         sourceIndex: idx + 2,
-        seq: seqIdx >= 0 ? cleanString(arr[seqIdx]) : String(idx + 1),
+        // 순번은 엑셀 값이 아니라 업로드된 데이터 행 순서대로 1부터 자동 생성합니다.
+        seq: String(idx + 1),
         trackingNo: trackingIdx >= 0 ? cleanTrackingNo(arr[trackingIdx]) : '',
         internalId: internalIdx >= 0 ? cleanString(arr[internalIdx]) : '',
         deliveryStatus: '',
@@ -219,7 +233,7 @@ function parseSheetToRows(sheetJson, mapping) {
         checkedAt: '',
         selected: false
       };
-      row.rowId = makeRowId(row);
+      row.rowId = makeRowId(row, idx);
       if (!row.trackingNo) {
         row.workStatus = '실패';
         row.queryResult = '실패';
@@ -306,7 +320,7 @@ export default function Page() {
     }
     const newHeaders = json[0].map(cleanString).filter(Boolean);
     const newMapping = {
-      seq: findColumn(newHeaders, 'seq'),
+      seq: '',
       trackingNo: findColumn(newHeaders, 'trackingNo'),
       internalId: findColumn(newHeaders, 'internalId')
     };
@@ -480,7 +494,7 @@ export default function Page() {
     return {
       ...row,
       deliveryStatus: data.deliveryStatus || data.processStatus || '',
-      deliveryDate: data.deliveryDate || '',
+      deliveryDate: data.deliveryDate || ((String(data.deliveryStatus || data.processStatus || '').includes('배달완료') || String(data.deliveryStatus || data.processStatus || '').includes('배송완료')) ? (data.lastDate || '') : ''),
       lastDate: data.lastDate || '',
       lastTime: data.lastTime || '',
       postOffice: data.postOffice || '',
@@ -589,7 +603,7 @@ export default function Page() {
     try {
       const res = await fetch(`/api/track?rgist=${encodeURIComponent(no)}`, { cache: 'no-store' });
       const data = await res.json();
-      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'}` : `API 테스트 실패: ${data.errorMessage}`);
+      setMessage(data.ok ? `API 테스트 성공: ${data.deliveryStatus || data.processStatus || '상태값 확인'} / 배달일자: ${data.deliveryDate || '없음'}` : `API 테스트 실패: ${data.errorMessage}`);
     } catch (e) {
       setMessage(`API 테스트 오류: ${e?.message || e}`);
     }
@@ -645,13 +659,13 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js</p>
+          <p className="eyebrow">Vercel / Next.js v0.1.8</p>
           <h1>등기 배송상태 일괄조회 도구</h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
         <div className="heroCard">
           <strong>개인정보 최소화</strong>
-          <span>서버에는 등기번호만 전송합니다. 순번·고객번호는 브라우저 내부 매칭용입니다.</span>
+          <span>서버에는 등기번호만 전송합니다. 순번은 1부터 자동 생성하고 고객번호는 브라우저 내부 매칭용입니다.</span>
         </div>
       </section>
 
@@ -664,7 +678,7 @@ export default function Page() {
           <p className="hint">첫 번째 시트를 읽습니다. 첫 행은 헤더로 인식합니다.</p>
           {Array.isArray(headers) && headers.length > 0 && (
             <div className="mapping">
-              <label>순번 컬럼<select value={mapping.seq} onChange={(e) => setMapping({ ...mapping, seq: e.target.value })}><option value="">없으면 자동 생성</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
+              <p className="hint strongHint">순번은 엑셀 컬럼을 쓰지 않고 업로드된 행 순서대로 1부터 자동 생성합니다.</p>
               <label>등기번호 컬럼<select value={mapping.trackingNo} onChange={(e) => setMapping({ ...mapping, trackingNo: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <label>고객번호 컬럼<select value={mapping.internalId} onChange={(e) => setMapping({ ...mapping, internalId: e.target.value })}><option value="">선택 안 함</option>{headers.map((h) => <option key={h} value={h}>{h}</option>)}</select></label>
               <button className="primary" onClick={createJobFromMapping}>이 설정으로 작업 생성</button>
@@ -755,7 +769,7 @@ export default function Page() {
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>배달상태</th><th>최종일자</th><th>시간</th><th>우체국</th><th>배달일자</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -763,7 +777,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.deliveryStatus}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td>{r.deliveryDate}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}
