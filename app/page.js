@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import * as XLSX from 'xlsx';
 
 const STORAGE_PREFIX = 'epost-tracking-job:';
 const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
-const APP_VERSION = 'v0.2.6-next-build-fix';
+const APP_VERSION = 'v0.2.9-vercel-build-lock-fix';
 
 const CANDIDATES = {
   // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
@@ -19,7 +18,7 @@ const DEFAULT_COLUMNS = [
   '순번', '등기번호', '고객번호',
   '발송인', '수취인', '우편물종류', '취급구분',
   '배달상태', '일자구분', '처리일자', '처리시간', '처리우체국',
-  '처리현황', '상세설명', '미송달사유', 'API배달일자', '종적이력',
+  '처리현황', '상세설명', '미배송/반송사유', '조회일자', '종적이력',
   '작업상태', '조회결과', '실패사유', '재조회횟수', '조회시각'
 ];
 
@@ -33,6 +32,12 @@ function todayCompact() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+}
+
+function dateOnly(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  return s.split(' ')[0];
 }
 
 function cleanString(value) {
@@ -198,7 +203,7 @@ function toCsv(rows, mode = 'all') {
       r.processStatus,
       r.detail,
       r.undeliveredReason,
-      r.apiDeliveryDate,
+      dateOnly(r.checkedAt),
       r.eventHistoryText,
       r.workStatus,
       r.queryResult,
@@ -331,6 +336,7 @@ export default function Page() {
   async function handleFile(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
+    const XLSX = await import('xlsx');
     let workbook;
     if (file.name.toLowerCase().endsWith('.csv')) {
       const text = new TextDecoder('utf-8').decode(buf);
@@ -701,7 +707,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.2.6</p>
+          <p className="eyebrow">Vercel / Next.js v0.2.8</p>
           <h1>등기 배송상태 일괄조회 도구 <span className="versionBadge">{APP_VERSION}</span></h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
@@ -807,12 +813,12 @@ export default function Page() {
                 <input placeholder="검색" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
             </div>
-            <p className="hint strongHint">이 버전은 국내우편물 종적조회 API 문서의 응답값을 모두 반영합니다. 발송인/수취인/우편물종류/취급구분/처리현황/상세설명/미송달사유/종적이력까지 CSV에 포함됩니다.</p>
+            <p className="hint strongHint">이 버전은 국내우편물 종적조회 API 문서의 응답값을 모두 반영합니다. 발송인/수취인/우편물종류/취급구분/처리현황/상세설명/미배송·반송사유/조회일자/종적이력까지 CSV에 포함됩니다.</p>
             <div className="tableWrap">
               <table>
                 <thead>
                   <tr>
-                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>발송인</th><th>수취인</th><th>우편물종류</th><th>취급구분</th><th>배달상태</th><th>일자구분</th><th>처리일자</th><th>시간</th><th>우체국</th><th>처리현황</th><th>상세설명</th><th>미송달사유</th><th>API배달일자</th><th>종적이력</th><th>실패사유</th><th>조회시각</th><th>제외</th>
+                    <th>선택</th><th>상태</th><th>순번</th><th>등기번호</th><th>고객번호</th><th>발송인</th><th>수취인</th><th>우편물종류</th><th>취급구분</th><th>배달상태</th><th>일자구분</th><th>처리일자</th><th>시간</th><th>우체국</th><th>처리현황</th><th>상세설명</th><th>미배송/반송사유</th><th>조회일자</th><th>종적이력</th><th>실패사유</th><th>조회시각</th><th>제외</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -820,7 +826,7 @@ export default function Page() {
                     <tr key={r.rowId} className={selectedRowId === r.rowId ? 'selected' : ''}>
                       <td><input type="radio" name="selectedRow" checked={selectedRowId === r.rowId} onChange={() => setSelectedRowId(r.rowId)} /></td>
                       <td><span className={`pill ${statusClass(r.workStatus)}`}>{r.workStatus}</span></td>
-                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.senderName}</td><td>{r.receiverName}</td><td>{r.mailType}</td><td>{r.treatmentType}</td><td>{r.deliveryStatus}</td><td>{r.statusDateLabel || inferDateLabel(r)}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td>{r.processStatus}</td><td>{r.detail}</td><td>{r.undeliveredReason}</td><td>{r.apiDeliveryDate}</td><td className="historyText">{r.eventHistoryText}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
+                      <td>{r.seq}</td><td>{r.trackingNo}</td><td>{r.internalId}</td><td>{r.senderName}</td><td>{r.receiverName}</td><td>{r.mailType}</td><td>{r.treatmentType}</td><td>{r.deliveryStatus}</td><td>{r.statusDateLabel || inferDateLabel(r)}</td><td>{r.lastDate}</td><td>{r.lastTime}</td><td>{r.postOffice}</td><td>{r.processStatus}</td><td>{r.detail}</td><td>{r.undeliveredReason}</td><td>{dateOnly(r.checkedAt)}</td><td className="historyText">{r.eventHistoryText}</td><td className="failText">{r.failReason}</td><td>{r.checkedAt}</td>
                       <td><button className="small" onClick={() => toggleExclude(r.rowId)}>{r.workStatus === '제외' ? '복원' : '제외'}</button></td>
                     </tr>
                   ))}

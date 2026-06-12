@@ -134,29 +134,71 @@ function makeEventHistoryText(events) {
     .join(' / ');
 }
 
+function normalizeReasonText(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const compact = raw.replace(/\s+/g, '');
+
+  // 완료 처리 자체는 사유가 아닙니다. 최종 이벤트가 '반송배달'인 경우,
+  // 실제 반송 사유는 보통 그 이전 '미배달 + detailDc' 이벤트에 들어옵니다.
+  const nonReasonEvents = ['배달완료', '배송완료', '반송배달', '반송완료', '배달준비', '접수'];
+  if (nonReasonEvents.includes(compact)) return '';
+
+  // 우체국 detailDc 샘플/실제 응답에서 '반송수취인불명', '반송이사불명'처럼
+  // 앞에 '반송'이 붙는 경우가 많아 사용자가 필요한 순수 사유만 남깁니다.
+  let cleaned = compact.replace(/^반송/, '');
+  cleaned = cleaned.replace(/배달중$/, '');
+  return cleaned;
+}
+
+function extractReasonCandidate(event) {
+  const detail = normalizeReasonText(event?.detail);
+  const process = normalizeReasonText(event?.processStatus);
+  const text = `${event?.processStatus || ''} ${event?.detail || ''}`;
+  const reasonWords = [
+    '폐문부재', '이사부재', '이사불명', '수취인불명', '주소불명',
+    '수취인부재', '부재', '보관기간경과', '수취거절', '수취인거절',
+    '주소미상', '전출', '미거주', '장기부재', '불명'
+  ];
+
+  // detailDc가 가장 중요합니다. 예: processSttus=미배달, detailDc=반송이사불명
+  if (detail && reasonWords.some((kw) => detail.includes(kw))) return detail;
+
+  // detailDc 안에 표준 단어가 없어도 '미배달' 이벤트의 상세설명은 사유로 취급합니다.
+  if (detail && String(event?.processStatus || '').includes('미배달')) return detail;
+
+  if (process && reasonWords.some((kw) => process.includes(kw))) return process;
+  if (text && reasonWords.some((kw) => text.includes(kw))) {
+    const found = reasonWords.find((kw) => text.includes(kw));
+    return found || '';
+  }
+  return '';
+}
+
 function pickUndeliveredReason(status, events) {
   const s = String(status || '');
   const eventList = Array.isArray(events) ? events : [];
-  const reasonKeywords = ['반송', '미배달', '배달불능', '부재', '폐문', '주소', '수취인', '보관', '이사', '불명', '거절'];
   const isDelivered = s.includes('배달완료') || s.includes('배송완료');
-  const hasIssueStatus = !isDelivered && (s.includes('반송') || reasonKeywords.some((kw) => s.includes(kw)));
-  if (!hasIssueStatus) return '';
+  if (isDelivered) return '';
 
   const candidates = [...eventList].reverse();
-  const detailed = candidates.find((event) => {
-    const text = `${event.processStatus || ''} ${event.detail || ''}`;
-    return event.detail && reasonKeywords.some((kw) => text.includes(kw));
-  });
-  if (detailed?.detail) return detailed.detail;
 
-  const anyDetail = candidates.find((event) => event.detail)?.detail;
-  if (anyDetail) return anyDetail;
-
-  const issueProcess = candidates.find((event) => {
-    const text = `${event.processStatus || ''} ${event.detail || ''}`;
-    return reasonKeywords.some((kw) => text.includes(kw));
+  // 1순위: 실제 미배송/반송 사유는 보통 '미배달' 이벤트의 detailDc에 존재합니다.
+  // 예: 미배달 + 반송이사불명 => 이사불명
+  const undeliveredEvent = candidates.find((event) => {
+    const process = String(event?.processStatus || '');
+    const reason = extractReasonCandidate(event);
+    return process.includes('미배달') && reason;
   });
-  return issueProcess?.processStatus || '';
+  if (undeliveredEvent) return extractReasonCandidate(undeliveredEvent);
+
+  // 2순위: '미배달' 문구가 없어도 detailDc에 폐문부재/이사불명 등 사유가 있는 이벤트
+  const reasonEvent = candidates.find((event) => extractReasonCandidate(event));
+  if (reasonEvent) return extractReasonCandidate(reasonEvent);
+
+  // 3순위: 반송/배달불능 상태인데 별도 상세 사유가 없으면 상태값만 최소 표시
+  if (s.includes('반송') || s.includes('배달불능') || s.includes('미배달')) return s;
+  return '';
 }
 
 function parseDomesticXml(xml, requestedTrackingNo) {
@@ -281,7 +323,7 @@ async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.6',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.8',
           'Connection': 'close'
         }
       });
