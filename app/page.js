@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 const STORAGE_PREFIX = 'epost-tracking-job:';
 const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
-const APP_VERSION = 'v0.2.5-all-api-fields';
+const APP_VERSION = 'v0.2.6-next-build-fix';
 
 const CANDIDATES = {
   // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
@@ -701,7 +701,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.2.5</p>
+          <p className="eyebrow">Vercel / Next.js v0.2.6</p>
           <h1>등기 배송상태 일괄조회 도구 <span className="versionBadge">{APP_VERSION}</span></h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>

@@ -281,7 +281,7 @@ async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.5',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.6',
           'Connection': 'close'
         }
       });
