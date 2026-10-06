@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 const STORAGE_PREFIX = 'epost-tracking-job:';
 const STORAGE_INDEX = 'epost-tracking-job-index:v1';
 const CURRENT_JOB = 'epost-tracking-current-job:v1';
-const APP_VERSION = 'v0.2.9-vercel-build-lock-fix';
+const APP_VERSION = 'v0.3.0-notfound-continue';
 
 const CANDIDATES = {
   // 순번은 엑셀 컬럼을 읽지 않고 업로드 행 순서 기준으로 1부터 자동 생성합니다.
@@ -165,6 +165,7 @@ function statusClass(status) {
   if (status === '조회중') return 'warn';
   if (status === '중단됨') return 'warn';
   if (status === '제외') return 'muted';
+  if (status === '정보없음') return 'muted';
   return '';
 }
 
@@ -175,7 +176,8 @@ function delay(ms) {
 function toCsv(rows, mode = 'all') {
   const filtered = rows.filter((r) => {
     if (mode === 'success') return ['성공', '수동입력'].includes(r.workStatus);
-    if (mode === 'fail') return r.workStatus === '실패';
+    // 실패 건 CSV에는 후속 확인이 필요한 '정보없음' 건도 함께 담습니다.
+    if (mode === 'fail') return ['실패', '정보없음'].includes(r.workStatus);
     return true;
   });
 
@@ -316,6 +318,7 @@ export default function Page() {
       total: rows.length,
       success: rows.filter((r) => ['성공', '수동입력'].includes(r.workStatus)).length,
       fail: count('실패'),
+      notFound: count('정보없음'),
       waiting: count('대기'),
       running: count('조회중'),
       stopped: count('중단됨'),
@@ -521,15 +524,38 @@ export default function Page() {
   }
 
   async function queryOne(row) {
-    const res = await fetch(`/api/track?rgist=${encodeURIComponent(row.trackingNo)}`, { cache: 'no-store' });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
+    let res;
+    let data;
+    try {
+      res = await fetch(`/api/track?rgist=${encodeURIComponent(row.trackingNo)}`, { cache: 'no-store' });
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Vercel 시간초과 등 HTML 응답: 해당 건만 일시실패로 기록하고 다음 건으로 진행합니다.
+        data = { ok: false, retryable: true, errorMessage: `HTTP ${res.status} 응답 해석 불가` };
+      }
+    } catch (error) {
+      data = { ok: false, retryable: true, errorMessage: `fetch failed: ${error?.message || error}` };
+    }
+    if (data.notFound) {
+      return {
+        ...row,
+        deliveryStatus: '조회결과 없음',
+        workStatus: '정보없음',
+        queryResult: '정보없음',
+        failReason: data.errorMessage || '조회결과가 없습니다.',
+        retryCount: (row.retryCount || 0) + 1,
+        checkedAt: nowText()
+      };
+    }
+    if (!res?.ok || !data.ok) {
       const isTransient = data.retryable || data.transient || String(data.errorMessage || '').includes('ECONNRESET') || String(data.errorMessage || '').includes('fetch failed');
       return {
         ...row,
         workStatus: '실패',
         queryResult: isTransient ? '일시실패' : '실패',
-        failReason: `${data.errorMessage || `HTTP ${res.status}`}${isTransient ? ' / 일시 네트워크 오류: 실패 건 재조회 대상' : ''}`,
+        failReason: `${data.errorMessage || `HTTP ${res?.status}`}${isTransient ? ' / 일시 네트워크 오류: 실패 건 재조회 대상' : ''}`,
         retryCount: (row.retryCount || 0) + 1,
         checkedAt: nowText()
       };
@@ -659,7 +685,7 @@ export default function Page() {
 
   function downloadCsv(mode) {
     if (!job) return;
-    const label = mode === 'success' ? '성공건' : mode === 'fail' ? '실패건' : '전체';
+    const label = mode === 'success' ? '성공건' : mode === 'fail' ? '실패_정보없음건' : '전체';
     downloadBlob(toCsv(job.rows, mode), `등기배송조회_${label}_${todayCompact()}.csv`, 'text/csv;charset=utf-8');
   }
 
@@ -707,7 +733,7 @@ export default function Page() {
     <main className="container">
       <section className="hero">
         <div>
-          <p className="eyebrow">Vercel / Next.js v0.2.8</p>
+          <p className="eyebrow">Vercel / Next.js v0.3.0</p>
           <h1>등기 배송상태 일괄조회 도구 <span className="versionBadge">{APP_VERSION}</span></h1>
           <p className="sub">엑셀 업로드 → 등기번호 자동조회 → 중간저장 → CSV 다운로드</p>
         </div>
@@ -783,6 +809,7 @@ export default function Page() {
               <div><strong>{stats.total}</strong><span>전체</span></div>
               <div><strong>{stats.success}</strong><span>성공</span></div>
               <div><strong>{stats.fail}</strong><span>실패</span></div>
+              <div><strong>{stats.notFound}</strong><span>정보없음</span></div>
               <div><strong>{stats.waiting}</strong><span>대기</span></div>
               <div><strong>{stats.stopped}</strong><span>중단됨</span></div>
               <div><strong>{stats.excluded}</strong><span>제외</span></div>
@@ -800,7 +827,7 @@ export default function Page() {
               <button onClick={() => setIsPaused((v) => !v)} disabled={!isRunning}>{isPaused ? '계속' : '일시정지'}</button>
               <button className="danger" onClick={stopQuery} disabled={!isRunning}>중지</button>
             </div>
-            <div className="progress"><div style={{ width: `${stats.total ? Math.round((stats.success + stats.fail + stats.excluded) / stats.total * 100) : 0}%` }} /></div>
+            <div className="progress"><div style={{ width: `${stats.total ? Math.round((stats.success + stats.fail + stats.notFound + stats.excluded) / stats.total * 100) : 0}%` }} /></div>
           </section>
 
           <section className="card">
@@ -808,7 +835,7 @@ export default function Page() {
               <h2>5. 결과 확인</h2>
               <div className="inline wrap">
                 <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-                  {['전체', '성공', '실패', '대기', '중단됨', '제외'].map((x) => <option key={x} value={x}>{x}</option>)}
+                  {['전체', '성공', '실패', '정보없음', '대기', '중단됨', '제외'].map((x) => <option key={x} value={x}>{x}</option>)}
                 </select>
                 <input placeholder="검색" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
@@ -841,7 +868,7 @@ export default function Page() {
             <div className="inline wrap">
               <button className="primary" onClick={() => downloadCsv('all')}>전체 결과 CSV</button>
               <button onClick={() => downloadCsv('success')}>성공 건 CSV</button>
-              <button onClick={() => downloadCsv('fail')}>실패 건 CSV</button>
+              <button onClick={() => downloadCsv('fail')}>실패·정보없음 건 CSV</button>
             </div>
           </section>
         </>

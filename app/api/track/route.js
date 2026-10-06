@@ -235,7 +235,12 @@ function parseDomesticXml(xml, requestedTrackingNo) {
   const undeliveredReason = pickUndeliveredReason(status, events);
   // 문서상 배달일자는 dlvyDe가 정답. 다만 일부 응답에서 dlvyDe가 비어 있으면 완료성 종적 이벤트 날짜로 보정합니다.
   const deliveryDate = deliveryDateByDoc || completionEvent?.date || '';
-  const ok = successYN === 'Y' || Boolean(status || events.length || deliveryDate || rgist);
+  // successYN=N 이면 우체국이 명시적으로 실패를 응답한 것이므로 성공으로 보지 않습니다.
+  // (rgist는 요청 등기번호로 보정되므로 성공 판단 근거로 쓰지 않습니다.)
+  const hasData = Boolean(status || events.length || deliveryDate);
+  const ok = successYN === 'Y' || (successYN !== 'N' && hasData);
+  // returnCode=03 '조회결과가 없습니다.' => 오류가 아니라 '정보없음' 결과로 처리합니다.
+  const notFound = !ok && (returnCode === '03' || errMsg.includes('조회결과가 없'));
 
   let errorMessage = '';
   if (!ok) {
@@ -244,6 +249,7 @@ function parseDomesticXml(xml, requestedTrackingNo) {
 
   return {
     ok,
+    notFound,
     trackingNo: rgist,
     deliveryStatus: status,
     deliveryDate,
@@ -323,7 +329,7 @@ async function callDomestic(serviceKey, rgist, { retries = 4, timeoutMs = 25000 
         signal: controller.signal,
         headers: {
           Accept: 'application/xml,text/xml,*/*',
-          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.2.8',
+          'User-Agent': 'Mozilla/5.0 epost-tracking-vercel/0.3.0',
           'Connection': 'close'
         }
       });
@@ -371,6 +377,8 @@ export async function GET(request) {
 
     return Response.json({
       ok: false,
+      notFound: parsed.notFound,
+      returnCode: parsed.returnCode,
       trackingNo: rgist,
       errorMessage: parsed.errorMessage,
       source: DOMESTIC_ENDPOINT.id,
